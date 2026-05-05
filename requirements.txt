@@ -1,0 +1,20 @@
+# Versões fixadas para compatibilidade com Windows ARM64 (Snapdragon).
+# Em ARM64, as versões mais recentes de streamlit puxam uvicorn/httptools
+# (sem wheels arm64), e pyarrow recente também não tem wheels arm64 — pip
+# tenta compilar a partir do source e falha sem o MSVC Build Tools.
+#
+# Combinação testada:
+#   - streamlit 1.40.x ainda usa Tornado (sem uvicorn/httptools)
+#   - pyarrow 18.x tem wheels win_arm64 cp312
+#
+# Em x64 (Intel/AMD) qualquer versão recente funcionaria, mas estes pins
+# servem ambas as arquitecturas.
+
+streamlit==1.32.2
+pyarrow==18.1.0
+requests==2.32.3
+beautifulsoup4==4.12.3
+lxml==5.3.0
+cloudscraper==1.2.71
+pyairtable==2.3.6
+streamlit-authenticator==0.3.2

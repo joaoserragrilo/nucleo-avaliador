@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.Python
+*.so
+.pytest_cache/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Dados locais (em produção vive no Airtable)
+data/deals.json
+data/*.json.bak
+
+# Setup artifacts
+python-3.12.10-amd64.exe
+python-installer.exe
+
+# Editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# OS
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Excel locks (do OneDrive)
+~$*.xlsx
+~$*.docx
+
+# Excel originais (não devem ir para o repo público)
+*.xlsx
+*.xlsm
+Reflexões compra.txt
