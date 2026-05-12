@@ -21,10 +21,11 @@ from lib import persistence as P
 from lib import ine as INE
 from lib import parsers
 from lib import auth
+from lib import exports
 
 
 st.set_page_config(
-    page_title="Avaliador de Propriedades",
+    page_title="Núcleo Assets — Avaliador de Propriedades",
     page_icon="🏠",
     layout="wide",
 )
@@ -56,16 +57,46 @@ def cor_emoji(cor):
     return {"verde": "🟢", "amarelo": "🟡", "vermelho": "🔴", "ok": "🟢"}.get(cor, "⚪")
 
 
+# ---------------------------------------------------------------------------
+# Glossário (tooltips para siglas)
+# ---------------------------------------------------------------------------
+HELP = {
+    "VPT": "Valor Patrimonial Tributário — consultar na caderneta predial. Define cálculo do IMI e base de IMT/IS quando superior ao preço.",
+    "IMT": "Imposto Municipal sobre Transmissões Onerosas de Imóveis. Pago na escritura, em escalões marginais por valor.",
+    "IS": "Imposto do Selo. Verba 1.1 da TGIS — 0,8% sobre o maior entre VPT e preço de aquisição.",
+    "IMI": "Imposto Municipal sobre Imóveis. Anual, sobre VPT. Tipicamente 0,3–0,45%, varia por município.",
+    "LTV": "Loan-to-Value — rácio empréstimo / valor do imóvel. Banca em PT raramente vai além de 80–90% LTV.",
+    "ROI": "Return on Investment — lucro líquido ÷ equity total investida. Métrica nuclear de um Fix & Flip.",
+    "IRR": "Internal Rate of Return — taxa interna de retorno anualizada. Útil para comparar deals de ciclo diferente.",
+    "CoC": "Cash-on-Cash — retorno anual sobre o cash que entrou. ROI ÷ (ciclo/12).",
+    "IVA": "Imposto sobre o Valor Acrescentado. 6% em obra de reabilitação (Verba 2.23), 23% no regime normal.",
+    "ARU": "Área de Reabilitação Urbana. Activa IVA 6% e benefícios fiscais municipais.",
+    "HPP": "Habitação Própria e Permanente. Beneficia de IMT reduzido nos primeiros escalões.",
+    "AIMI": "Adicional ao IMI. Aplica-se a sujeitos passivos com VPT total > 600k (PF) ou ao valor total (PJ).",
+    "IRC": "Imposto sobre Rendimento de Pessoas Colectivas. 21% standard + derrama municipal (≈1,5% Lisboa/margens).",
+}
+
+MAX_COMPARAVEIS = 5
+
+
+def _df_comparaveis_vazio(n=MAX_COMPARAVEIS):
+    return pd.DataFrame([
+        {"url": "", "preco": 0, "area_m2": 0, "tipologia": "T2", "comentario": ""}
+        for _ in range(n)
+    ])
+
+
 def init_state():
     """Inicializa session state com defaults."""
     defaults = {
         "modo_app": "Completa",
-        "imp_dados": None,         # Dados do parser de URL
-        "comparaveis_df": pd.DataFrame([
-            {"url": "", "preco": 0, "area_m2": 0, "tipologia": "T2", "comentario": ""},
-        ]),
+        "imp_dados": None,
+        "comparaveis_df": _df_comparaveis_vazio(),
         "analise": None,
         "inputs_obj": None,
+        "target_roi": C.TARGET_ROI_FIXANDFLIP,
+        "target_margem": float(C.TARGET_MARGEM_ABS_MIN),
+        "target_ciclo": C.TARGET_CICLO_MAX_MESES,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -78,8 +109,17 @@ init_state()
 # Header
 # ---------------------------------------------------------------------------
 
-st.title("Avaliador de Propriedades — F&F")
-st.caption("v2 · Núcleo Assets · análise local com dados INE + comparáveis + parser de anúncios")
+_logo_col, _title_col = st.columns([1, 9])
+with _logo_col:
+    st.markdown(
+        "<div style='background:#1F4E78;color:#fff;padding:10px 14px;"
+        "border-radius:6px;text-align:center;font-weight:700;font-size:13px;"
+        "letter-spacing:1px;'>NÚCLEO<br>ASSETS</div>",
+        unsafe_allow_html=True,
+    )
+with _title_col:
+    st.title("Avaliador de Propriedades — Fix & Flip")
+    st.caption("v2 · Análise com dados INE, comparáveis e parser de anúncios")
 
 # ---------------------------------------------------------------------------
 # Sidebar — modo de uso
@@ -99,11 +139,31 @@ with st.sidebar:
     st.session_state["modo_app"] = modo
 
     st.divider()
+    with st.expander("🎯 Targets Núcleo (editáveis)", expanded=False):
+        st.caption("Ajusta os targets de referência. Aplicam-se imediatamente aos próximos cálculos.")
+        st.session_state["target_roi"] = st.number_input(
+            "ROI alvo (%)",
+            value=float(st.session_state["target_roi"] * 100),
+            min_value=0.0, max_value=100.0, step=1.0,
+            help=HELP["ROI"] + " Default Núcleo: 20%.",
+        ) / 100
+        st.session_state["target_margem"] = st.number_input(
+            "Margem absoluta mínima (€)",
+            value=float(st.session_state["target_margem"]),
+            min_value=0.0, step=1000.0,
+            help="Lucro líquido mínimo aceitável em euros. Default Núcleo: 30.000 €.",
+        )
+        st.session_state["target_ciclo"] = st.number_input(
+            "Ciclo máximo (meses)",
+            value=int(st.session_state["target_ciclo"]),
+            min_value=1, max_value=60, step=1,
+            help="Duração máxima aceitável do ciclo Fix & Flip. Default Núcleo: 18 meses.",
+        )
+
     st.caption(
-        "Targets Núcleo:\n"
-        f"- ROI {fmt_pct(C.TARGET_ROI_FIXANDFLIP)} | "
-        f"Margem {fmt_eur(C.TARGET_MARGEM_ABS_MIN)} | "
-        f"Ciclo ≤ {C.TARGET_CICLO_MAX_MESES}m"
+        f"Em uso: ROI {fmt_pct(st.session_state['target_roi'])} | "
+        f"Margem {fmt_eur(st.session_state['target_margem'])} | "
+        f"Ciclo ≤ {int(st.session_state['target_ciclo'])}m"
     )
 
     backend = P.backend_em_uso()
@@ -249,7 +309,32 @@ with tab_analise:
                 index=C.TIPOLOGIAS.index(imp.get("tipologia") or "T2"),
             )
 
+        # Item 12 — preço revenda manual (opcional)
+        st.markdown("**Preço de revenda**")
+        c4, c5 = st.columns(2)
+        with c4:
+            modo_venda_rapida = st.radio(
+                "Cálculo do preço de venda",
+                ["INE (automático, requer freguesia)", "Manual"],
+                horizontal=False,
+                help="Manual = inseres o valor previsto. INE = projecção do INE para a freguesia.",
+            )
+        with c5:
+            if modo_venda_rapida == "Manual":
+                preco_venda_rapido = st.number_input(
+                    "Preço de revenda previsto (€)",
+                    min_value=0.0, value=float(preco) * 1.4, step=1000.0,
+                    help="Valor que esperas obter na venda após reabilitação.",
+                )
+                if area > 0 and preco_venda_rapido > 0:
+                    st.caption(f"→ €/m² implícito: **{fmt_eur(preco_venda_rapido / area)}**")
+            else:
+                preco_venda_rapido = 0.0
+                if not freguesia:
+                    st.warning("Para usar INE, escolhe uma freguesia acima.")
+
         if st.button("Analisar (rápido)", type="primary", use_container_width=True):
+            usa_ine = (modo_venda_rapida.startswith("INE") and bool(freguesia))
             inputs = E.FFInputs(
                 nome_deal=f"Quick {freguesia or 'sem-freguesia'}",
                 freguesia=freguesia,
@@ -258,11 +343,14 @@ with tab_analise:
                 area_m2=area,
                 estado_conservacao=estado,
                 preco_aquisicao=preco,
-                vpt=preco * 0.5,  # estimativa default conservadora
+                vpt=preco * 0.5,  # VPT removido do UI (Item 3)
+                custos_notario_registo=C.CUSTOS_NOTARIO_REGISTO_DEFAULT,
+                custos_holding_mensais=C.CUSTOS_HOLDING_MENSAL_DEFAULT,
+                usa_financiamento=False,
                 obra_modo="auto",
                 ciclo_meses=ciclo,
-                venda_modo="ine" if freguesia else "manual",
-                preco_venda_manual=preco * 1.4,  # fallback se sem freguesia
+                venda_modo="ine" if usa_ine else "manual",
+                preco_venda_manual=preco_venda_rapido if not usa_ine else 0.0,
                 comparaveis=[],
                 estrutura="lda",
             )
@@ -313,24 +401,50 @@ with tab_analise:
             preco = st.number_input(
                 "Preço aquisição (€)", min_value=0.0,
                 value=float(imp.get("preco") or 175_000), step=1000.0,
+                help="Preço pedido / preço a oferecer pelo imóvel.",
             )
-            vpt = st.number_input("VPT (€)", min_value=0.0, value=90_000.0, step=1000.0)
+            # VPT removido do UI (Item 3) — estimativa conservadora preço × 0.5
+            vpt = preco * 0.5
             tipo_imt = st.selectbox(
                 "Tipo IMT", ["secundaria", "hpp", "outros_urbanos", "rustico"], index=0,
+                help=HELP["IMT"] + " 'secundária' é o default para F&F.",
             )
-            isencao_imt = st.checkbox("Isenção IMT (revenda art. 7º CIMT)")
-            cust_not = st.number_input("Notário+registo (€)", value=1500.0, step=100.0)
+            isencao_imt = st.checkbox(
+                "Isenção IMT (revenda art. 7º CIMT)",
+                help="Aplicável se o objecto é revenda e a empresa está colectada para o efeito.",
+            )
+            cust_not = st.number_input(
+                "Notário+registo (€)",
+                value=float(C.CUSTOS_NOTARIO_REGISTO_DEFAULT), step=100.0,
+                help="Escritura + registo predial. Tipicamente 800–1.500 €.",
+            )
 
         with col2:
             st.markdown("**Financiamento**")
-            usa_fin = st.checkbox("Usa financiamento bancário", value=True)
-            ltv = st.slider("LTV (%)", 0, 90, 70, 5, disabled=not usa_fin) / 100
-            taxa_juro = st.number_input("Taxa juro anual (%)", value=5.5, step=0.1, disabled=not usa_fin) / 100
-            prazo = st.number_input("Prazo (anos)", value=30, step=1, disabled=not usa_fin)
+            # Item 5 — financiamento OFF por defeito
+            usa_fin = st.checkbox(
+                "Usa financiamento bancário", value=False,
+                help="Default Núcleo: sem financiamento. Activar se o deal vai com banca.",
+            )
+            ltv = st.slider(
+                "LTV (%)", 0, 90, 70, 5, disabled=not usa_fin,
+                help=HELP["LTV"],
+            ) / 100
+            taxa_juro = st.number_input(
+                "Taxa juro anual (%)", value=5.5, step=0.1, disabled=not usa_fin,
+                help="TAN. Para F&F, banca em PT está em 5–7%.",
+            ) / 100
+            prazo = st.number_input(
+                "Prazo (anos)", value=30, step=1, disabled=not usa_fin,
+                help="Prazo do empréstimo. Tipicamente 25–30 anos.",
+            )
             comissoes_ab = st.number_input(
                 "Comissões abertura+aval (€)", value=1500.0, step=100.0, disabled=not usa_fin,
             )
-            seguros = st.number_input("Seguros anuais (€)", value=350.0, step=50.0, disabled=not usa_fin)
+            seguros = st.number_input(
+                "Seguros anuais (€)", value=350.0, step=50.0, disabled=not usa_fin,
+                help="Seguro vida + multi-riscos exigidos pelo banco.",
+            )
 
             st.markdown("**Obra**")
             obra_modo = st.radio(
@@ -354,13 +468,27 @@ with tab_analise:
                 "Regime IVA obra",
                 ["verba_2_23", "normal"],
                 format_func=lambda x: "6% (Verba 2.23)" if x == "verba_2_23" else "23% (normal)",
+                help=HELP["IVA"],
             )
-            cont = st.slider("Contingência obra (%)", 0, 30, 10, 5) / 100
+            cont = st.slider(
+                "Contingência obra (%)", 0, 30, 10, 5,
+                help="Buffer sobre o orçamento de obra para imprevistos. Núcleo: 10% standard, 15% se estrutura complexa.",
+            ) / 100
 
             st.markdown("**Holding**")
-            ciclo = st.number_input("Ciclo (meses)", value=12, step=1, min_value=1)
-            taxa_imi = st.number_input("Taxa IMI (%)", value=0.35, step=0.05) / 100
-            holding_mes = st.number_input("Custos holding /mês (€)", value=50.0, step=10.0)
+            ciclo = st.number_input(
+                "Ciclo (meses)", value=12, step=1, min_value=1,
+                help="Duração total do projecto: compra → obra → venda.",
+            )
+            taxa_imi = st.number_input(
+                "Taxa IMI (%)", value=0.35, step=0.05,
+                help=HELP["IMI"],
+            ) / 100
+            holding_mes = st.number_input(
+                "Custos holding /mês (€)",
+                value=float(C.CUSTOS_HOLDING_MENSAL_DEFAULT), step=10.0,
+                help="Condomínio, água, luz, gás durante o ciclo. Default Núcleo: 100 €/mês.",
+            )
 
         with col3:
             st.markdown("**Estimativa de Venda**")
@@ -378,15 +506,33 @@ with tab_analise:
             if venda_modo == "manual":
                 preco_venda_manual = st.number_input(
                     "Preço venda (€)", value=250_000.0, step=1000.0,
+                    help="Valor estimado para a venda após reabilitação.",
                 )
+                # Item 9 — €/m² implícito abaixo do preço de venda
+                if area > 0 and preco_venda_manual > 0:
+                    st.caption(
+                        f"→ €/m² implícito na venda: **{fmt_eur(preco_venda_manual / area)}** "
+                        f"(usado nos próximos cálculos)"
+                    )
             else:
                 preco_venda_manual = 0.0
 
             if venda_modo in ("comparaveis", "max_comp_ine"):
-                st.caption("Adiciona comparáveis (urls + preço + m² + tipologia)")
+                st.caption(
+                    f"Adiciona até {MAX_COMPARAVEIS} comparáveis (URL + preço + m² + tipologia). "
+                    "Linhas em branco são ignoradas."
+                )
+                # Item 8 — comparáveis: número fixo (5)
+                df_cur = st.session_state["comparaveis_df"]
+                if len(df_cur) < MAX_COMPARAVEIS:
+                    falta = MAX_COMPARAVEIS - len(df_cur)
+                    extra = _df_comparaveis_vazio(falta)
+                    df_cur = pd.concat([df_cur, extra], ignore_index=True)
+                elif len(df_cur) > MAX_COMPARAVEIS:
+                    df_cur = df_cur.head(MAX_COMPARAVEIS).reset_index(drop=True)
                 edited_df = st.data_editor(
-                    st.session_state["comparaveis_df"],
-                    num_rows="dynamic",
+                    df_cur,
+                    num_rows="fixed",
                     use_container_width=True,
                     key="comparaveis_editor",
                 )
@@ -498,24 +644,51 @@ with tab_analise:
         st.markdown(f"### {cor_emoji(v['cor'])} {v['rotulo']}")
         st.write(v["mensagem"])
 
-        # KPIs
+        # KPIs — Item 10: tooltips em todas as métricas-chave
         st.markdown("#### Métricas-chave")
         k1, k2, k3, k4, k5 = st.columns(5)
-        k1.metric("Lucro líquido", fmt_eur(out["lucro_liquido"]))
-        k2.metric("ROI total", fmt_pct(out["roi_total"]),
-                  delta=f"target {fmt_pct(C.TARGET_ROI_FIXANDFLIP)}")
-        k3.metric("CoC anual", fmt_pct(out["cash_on_cash_anual"]))
-        k4.metric("IRR", fmt_pct(out["irr_aproximado"]))
-        k5.metric("Equity total", fmt_eur(out["equity_total"]))
+        k1.metric(
+            "Lucro líquido", fmt_eur(out["lucro_liquido"]),
+            help="Resultado final após todos os custos (compra, obra, holding, venda, impostos).",
+        )
+        k2.metric(
+            "ROI total", fmt_pct(out["roi_total"]),
+            delta=f"target {fmt_pct(st.session_state['target_roi'])}",
+            help=HELP["ROI"],
+        )
+        k3.metric(
+            "CoC anual", fmt_pct(out["cash_on_cash_anual"]),
+            help=HELP["CoC"],
+        )
+        k4.metric(
+            "IRR", fmt_pct(out["irr_aproximado"]),
+            help=HELP["IRR"],
+        )
+        k5.metric(
+            "Equity total", fmt_eur(out["equity_total"]),
+            help="Capital próprio total investido (entrada + obra + custos fora financiamento).",
+        )
 
         # Preço/m² + venda
         st.markdown("#### Preços por m²")
         k1, k2, k3, k4 = st.columns(4)
-        k1.metric("Preço/m² compra", fmt_eur(out["preco_m2_compra"]))
-        k2.metric("Preço/m² venda", fmt_eur(out["preco_m2_venda"]))
-        k3.metric("Preço venda usado", fmt_eur(out["preco_venda_usado"]),
-                  delta=f"origem: {out['preco_venda_origem']}")
-        k4.metric("Margem bruta (% venda)", fmt_pct(out["margem_bruta_pct_venda"]))
+        k1.metric(
+            "Preço/m² compra", fmt_eur(out["preco_m2_compra"]),
+            help="Preço de aquisição ÷ área.",
+        )
+        k2.metric(
+            "Preço/m² venda", fmt_eur(out["preco_m2_venda"]),
+            help="Preço de venda estimado ÷ área. Comparar com INE e comparáveis da freguesia.",
+        )
+        k3.metric(
+            "Preço venda usado", fmt_eur(out["preco_venda_usado"]),
+            delta=f"origem: {out['preco_venda_origem']}",
+            help="Valor final usado nos cálculos. Origem: manual/INE/comparáveis.",
+        )
+        k4.metric(
+            "Margem bruta (% venda)", fmt_pct(out["margem_bruta_pct_venda"]),
+            help="(Preço venda − preço compra − obra) ÷ preço venda. Indicador rápido de espaço para erros.",
+        )
 
         # Flags
         st.markdown("#### Flags")
@@ -637,6 +810,66 @@ with tab_analise:
             )
         except Exception as e:
             st.warning(f"Simulação falhou: {e}")
+
+        st.divider()
+        # ---- Exportar / Partilhar (Item 11) ----
+        st.markdown("### Exportar / Partilhar")
+        st.caption("Exporta em Excel, PDF (branding Núcleo Assets) ou HTML auto-contido para partilhar por link.")
+
+        try:
+            inputs_dict = a.get("inputs") or {}
+            if not inputs_dict and inp is not None:
+                from dataclasses import asdict as _asdict
+                try:
+                    inputs_dict = _asdict(inp)
+                except Exception:
+                    inputs_dict = {}
+
+            nome_safe = (inputs_dict.get("nome_deal") or "analise").replace(" ", "_").replace("/", "_")
+
+            e1, e2, e3 = st.columns(3)
+            with e1:
+                try:
+                    xlsx_bytes = exports.export_excel(a, inputs_dict)
+                    st.download_button(
+                        "📊 Exportar Excel",
+                        data=xlsx_bytes,
+                        file_name=f"{nome_safe}_NucleoAssets.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                    )
+                except Exception as ex:
+                    st.button("📊 Exportar Excel", disabled=True, use_container_width=True)
+                    st.caption(f"Excel indisponível: {ex}")
+            with e2:
+                try:
+                    pdf_bytes = exports.export_pdf(a, inputs_dict)
+                    st.download_button(
+                        "📄 Exportar PDF",
+                        data=pdf_bytes,
+                        file_name=f"{nome_safe}_NucleoAssets.pdf",
+                        mime="application/pdf",
+                        use_container_width=True,
+                    )
+                except Exception as ex:
+                    st.button("📄 Exportar PDF", disabled=True, use_container_width=True)
+                    st.caption(f"PDF indisponível: {ex}")
+            with e3:
+                try:
+                    html_str = exports.export_html(a, inputs_dict)
+                    st.download_button(
+                        "🔗 HTML para partilhar",
+                        data=html_str,
+                        file_name=f"{nome_safe}_NucleoAssets.html",
+                        mime="text/html",
+                        use_container_width=True,
+                        help="Ficheiro auto-contido. Envia por email ou aloja num link.",
+                    )
+                except Exception as ex:
+                    st.button("🔗 HTML", disabled=True, use_container_width=True)
+                    st.caption(f"HTML indisponível: {ex}")
+        except Exception as ex:
+            st.warning(f"Exportação falhou: {ex}")
 
         st.divider()
         # ---- Submeter ao Núcleo OS (Airtable) ou guardar local (dev) ----

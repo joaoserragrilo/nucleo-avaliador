@@ -18,3 +18,5 @@ lxml==5.3.0
 cloudscraper==1.2.71
 pyairtable==2.3.6
 streamlit-authenticator==0.3.2
+reportlab==4.2.5
+openpyxl==3.1.5

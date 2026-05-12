@@ -88,7 +88,12 @@ IRS_MV_TAXA_AUTONOMA = 0.28
 # ---------------------------------------------------------------------------
 # Custos transação (compra)
 # ---------------------------------------------------------------------------
-CUSTOS_NOTARIO_REGISTO_DEFAULT = 1_500  # Escritura + registo predial. Varia 800-2500€.
+CUSTOS_NOTARIO_REGISTO_DEFAULT = 1_000  # Escritura + registo predial. Varia 800-2500€.
+
+# ---------------------------------------------------------------------------
+# Holding mensal (condomínio, água, luz, etc. durante ciclo F&F)
+# ---------------------------------------------------------------------------
+CUSTOS_HOLDING_MENSAL_DEFAULT = 100  # €/mês default Núcleo
 
 # ---------------------------------------------------------------------------
 # Custos transação (venda)
